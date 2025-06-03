@@ -1,4 +1,4 @@
-async function handler(req, res) {
+export default async function handler(req, res) {
   // Gestisci preflight OPTIONS request
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -31,7 +31,10 @@ async function handler(req, res) {
     const sourceMapped = langMap[sourceLang] || sourceLang.toUpperCase();
     const targetMapped = langMap[targetLang] || targetLang.toUpperCase();
 
-    console.log(`Traducendo: "${Array.isArray(text) ? text.length + ' testi' : text}" da ${sourceMapped} a ${targetMapped}`);
+    // Supporta sia singoli testi che array
+    const textsArray = Array.isArray(text) ? text : [text];
+    
+    console.log(`Traducendo: ${textsArray.length} testi da ${sourceMapped} a ${targetMapped}`);
 
     const response = await fetch('https://api-free.deepl.com/v2/translate', {
       method: 'POST',
@@ -40,7 +43,7 @@ async function handler(req, res) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        text: Array.isArray(text) ? text : [text],
+        text: textsArray,
         source_lang: sourceMapped,
         target_lang: targetMapped
       })
@@ -91,5 +94,3 @@ async function handler(req, res) {
     });
   }
 }
-
-export default handler;
