@@ -1,4 +1,4 @@
-// Sistema di traduzione con fallback triplo: DeepL → Groq → Hugging Face
+// Sistema di traduzione con fallback triplo: DeepL → Groq → Hugging Face + Analytics
 export default async function handler(req, res) {
   // Headers CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -20,8 +20,11 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    const isArray = Array.isArray(text);
+    const textCount = isArray ? text.length : 1;
+
     console.log(`🚀 Inizio traduzione con fallback triplo: ${sourceLang || 'auto'} → ${targetLang}`);
-    console.log(`📝 Testi da tradurre: ${Array.isArray(text) ? text.length : 1}`);
+    console.log(`📝 Testi da tradurre: ${textCount}`);
 
     let result;
     let usedService = '';
@@ -35,6 +38,9 @@ export default async function handler(req, res) {
     } catch (deepLError) {
       console.log(`❌ DeepL fallito: ${deepLError.message}`);
       
+      // Log fallback analytics
+      await logAnalytics('api_fallback', { from: 'deepl', to: 'groq' });
+      
       // 2️⃣ SECONDO TENTATIVO: Groq
       try {
         console.log('🟡 Tentativo 2: Groq API...');
@@ -44,6 +50,9 @@ export default async function handler(req, res) {
       } catch (groqError) {
         console.log(`❌ Groq fallito: ${groqError.message}`);
         
+        // Log fallback analytics
+        await logAnalytics('api_fallback', { from: 'groq', to: 'huggingface' });
+        
         // 3️⃣ TERZO TENTATIVO: Hugging Face
         try {
           console.log('🟠 Tentativo 3: Hugging Face...');
@@ -52,10 +61,24 @@ export default async function handler(req, res) {
           console.log('✅ Hugging Face: Traduzione completata');
         } catch (hfError) {
           console.log(`❌ Tutti i servizi falliti. HF Error: ${hfError.message}`);
+          
+          // Log errore completo
+          await logAnalytics('error', { 
+            stage: 'all_services_failed',
+            textCount 
+          });
+          
           throw new Error('Tutti i servizi di traduzione sono temporaneamente non disponibili');
         }
       }
     }
+
+    // Log successo traduzione
+    await logAnalytics('translation_completed', {
+      service: usedService,
+      textCount,
+      targetLang
+    });
 
     return res.status(200).json({
       translatedText: result,
@@ -65,11 +88,36 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('💥 Errore generale:', error.message);
+    
+    // Log errore generale
+    await logAnalytics('error', { 
+      message: error.message,
+      textCount: Array.isArray(req.body.text) ? req.body.text.length : 1
+    });
+    
     return res.status(500).json({ 
       error: error.message,
       service: 'none',
       success: false
     });
+  }
+}
+
+// Funzione di logging analytics anonimo
+async function logAnalytics(event, data = {}) {
+  try {
+    const baseUrl = process.env.VERCEL_URL 
+      ? `https://${process.env.VERCEL_URL}` 
+      : 'http://localhost:3000';
+      
+    await fetch(`${baseUrl}/api/analytics`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event, data })
+    });
+  } catch (error) {
+    console.error('Analytics logging failed:', error);
+    // Non bloccare la traduzione per errori di analytics
   }
 }
 
@@ -112,7 +160,7 @@ async function translateWithDeepL(text, sourceLang, targetLang, apiKey) {
 
 // 🟡 GROQ TRANSLATION FUNCTION
 async function translateWithGroq(text, sourceLang, targetLang) {
-  // API Key di Groq (sostituisci con la tua)
+  // API Key di Groq (la tua API key)
   const GROQ_API_KEY = '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';
   
   if (!GROQ_API_KEY || GROQ_API_KEY.includes('INSERISCI')) {
@@ -185,7 +233,7 @@ ${textsToTranslate.map((t, i) => `${i + 1}. ${t}`).join('\n')}`;
 
 // 🟠 HUGGING FACE TRANSLATION FUNCTION
 async function translateWithHuggingFace(text, sourceLang, targetLang) {
-  // Token Hugging Face (sostituisci con il tuo)
+  // Token Hugging Face (il tuo token)
   const HF_TOKEN = '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';
   
   if (!HF_TOKEN || HF_TOKEN.includes('INSERISCI')) {
