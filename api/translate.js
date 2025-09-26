@@ -106,11 +106,10 @@ export default async function handler(req, res) {
 // Funzione di logging analytics anonimo
 async function logAnalytics(event, data = {}) {
   try {
-    const baseUrl = process.env.VERCEL_URL 
-      ? `https://${process.env.VERCEL_URL}` 
-      : 'http://localhost:3000';
-      
-    await fetch(`${baseUrl}/api/analytics`, {
+    // URL del tuo progetto dashboard (sostituisci con il tuo URL)
+    const dashboardUrl = 'https://translation-analytics-dashboard.vercel.app';
+    
+    await fetch(`${dashboardUrl}/api/analytics`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ event, data })
