@@ -1,9 +1,11 @@
+// Sistema di traduzione con fallback triplo: DeepL → Groq → Hugging Face
 export default async function handler(req, res) {
-  // Gestisci preflight OPTIONS request
+  // Headers CORS
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     return res.status(200).end();
   }
 
@@ -13,84 +15,240 @@ export default async function handler(req, res) {
 
   try {
     const { text, sourceLang, targetLang, apiKey } = req.body;
-
-    if (!text || !sourceLang || !targetLang || !apiKey) {
-      return res.status(400).json({ 
-        error: 'Missing required fields: text, sourceLang, targetLang, apiKey' 
-      });
+    
+    if (!text || !targetLang) {
+      return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Mappa codici lingua per DeepL
-    const langMap = {
-      'it': 'IT',
-      'en': 'EN',
-      'es': 'ES',
-      'fr': 'FR'
-    };
+    console.log(`🚀 Inizio traduzione con fallback triplo: ${sourceLang || 'auto'} → ${targetLang}`);
+    console.log(`📝 Testi da tradurre: ${Array.isArray(text) ? text.length : 1}`);
 
-    const sourceMapped = langMap[sourceLang] || sourceLang.toUpperCase();
-    const targetMapped = langMap[targetLang] || targetLang.toUpperCase();
+    let result;
+    let usedService = '';
 
-    // Supporta sia singoli testi che array
-    const textsArray = Array.isArray(text) ? text : [text];
-    
-    console.log(`Traducendo: ${textsArray.length} testi da ${sourceMapped} a ${targetMapped}`);
+    // 1️⃣ PRIMO TENTATIVO: DeepL
+    try {
+      console.log('🔵 Tentativo 1: DeepL API...');
+      result = await translateWithDeepL(text, sourceLang, targetLang, apiKey);
+      usedService = 'deepl';
+      console.log('✅ DeepL: Traduzione completata');
+    } catch (deepLError) {
+      console.log(`❌ DeepL fallito: ${deepLError.message}`);
+      
+      // 2️⃣ SECONDO TENTATIVO: Groq
+      try {
+        console.log('🟡 Tentativo 2: Groq API...');
+        result = await translateWithGroq(text, sourceLang, targetLang);
+        usedService = 'groq';
+        console.log('✅ Groq: Traduzione completata');
+      } catch (groqError) {
+        console.log(`❌ Groq fallito: ${groqError.message}`);
+        
+        // 3️⃣ TERZO TENTATIVO: Hugging Face
+        try {
+          console.log('🟠 Tentativo 3: Hugging Face...');
+          result = await translateWithHuggingFace(text, sourceLang, targetLang);
+          usedService = 'huggingface';
+          console.log('✅ Hugging Face: Traduzione completata');
+        } catch (hfError) {
+          console.log(`❌ Tutti i servizi falliti. HF Error: ${hfError.message}`);
+          throw new Error('Tutti i servizi di traduzione sono temporaneamente non disponibili');
+        }
+      }
+    }
 
-    const response = await fetch('https://api-free.deepl.com/v2/translate', {
-      method: 'POST',
-      headers: {
-        'Authorization': `DeepL-Auth-Key ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        text: textsArray,
-        source_lang: sourceMapped,
-        target_lang: targetMapped
-      })
+    return res.status(200).json({
+      translatedText: result,
+      service: usedService,
+      success: true
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('DeepL error:', response.status, errorText);
-      
-      if (response.status === 403) {
-        return res.status(403).json({ 
-          error: 'DeepL API Key non valida. Verifica la tua chiave.' 
-        });
-      } else if (response.status === 456) {
-        return res.status(456).json({ 
-          error: 'Quota caratteri DeepL esaurita. Riprova il mese prossimo.' 
-        });
+  } catch (error) {
+    console.error('💥 Errore generale:', error.message);
+    return res.status(500).json({ 
+      error: error.message,
+      service: 'none',
+      success: false
+    });
+  }
+}
+
+// 🔵 DEEPL TRANSLATION FUNCTION
+async function translateWithDeepL(text, sourceLang, targetLang, apiKey) {
+  if (!apiKey) {
+    throw new Error('DeepL API key missing');
+  }
+
+  const isArray = Array.isArray(text);
+  const textsToTranslate = isArray ? text : [text];
+  
+  const response = await fetch('https://api-free.deepl.com/v2/translate', {
+    method: 'POST',
+    headers: {
+      'Authorization': `DeepL-Auth-Key ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      text: textsToTranslate,
+      source_lang: sourceLang === 'it' ? 'IT' : (sourceLang || 'auto').toUpperCase(),
+      target_lang: targetLang.toUpperCase()
+    })
+  });
+
+  if (!response.ok) {
+    if (response.status === 403) {
+      throw new Error('DeepL: API key non valida');
+    } else if (response.status === 456) {
+      throw new Error('DeepL: Quota esaurita');
+    }
+    throw new Error(`DeepL HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const translations = data.translations.map(t => t.text);
+  
+  return isArray ? translations : translations[0];
+}
+
+// 🟡 GROQ TRANSLATION FUNCTION
+async function translateWithGroq(text, sourceLang, targetLang) {
+  // API Key di Groq (sostituisci con la tua)
+  const GROQ_API_KEY = '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';
+  
+  if (!GROQ_API_KEY || GROQ_API_KEY.includes('INSERISCI')) {
+    throw new Error('Groq API key non configurata');
+  }
+
+  const isArray = Array.isArray(text);
+  const textsToTranslate = isArray ? text : [text];
+  
+  // Mapping lingue per Groq
+  const langNames = {
+    'en': 'English',
+    'es': 'Spanish', 
+    'fr': 'French',
+    'it': 'Italian'
+  };
+
+  const sourceLangName = langNames[sourceLang] || 'Italian';
+  const targetLangName = langNames[targetLang] || 'English';
+
+  // Prepara il prompt per traduzione batch
+  const prompt = `Translate the following texts from ${sourceLangName} to ${targetLangName}. 
+Return ONLY the translations separated by "|||" in the same order:
+
+${textsToTranslate.map((t, i) => `${i + 1}. ${t}`).join('\n')}`;
+
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${GROQ_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'llama-3.1-8b-instant',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a professional translator. Return only the translations separated by "|||" without numbering or extra text.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 2000
+    })
+  });
+
+  if (!response.ok) {
+    if (response.status === 429) {
+      throw new Error('Groq: Rate limit raggiunto');
+    }
+    throw new Error(`Groq HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const translations = data.choices[0].message.content
+    .split('|||')
+    .map(t => t.trim());
+
+  // Verifica che abbiamo il numero corretto di traduzioni
+  if (translations.length !== textsToTranslate.length) {
+    console.warn('Groq: Numero traduzioni non corrispondente, uso fallback');
+    return textsToTranslate; // Fallback
+  }
+
+  return isArray ? translations : translations[0];
+}
+
+// 🟠 HUGGING FACE TRANSLATION FUNCTION
+async function translateWithHuggingFace(text, sourceLang, targetLang) {
+  // Token Hugging Face (sostituisci con il tuo)
+  const HF_TOKEN = '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';
+  
+  if (!HF_TOKEN || HF_TOKEN.includes('INSERISCI')) {
+    throw new Error('Hugging Face token non configurato');
+  }
+
+  const isArray = Array.isArray(text);
+  const textsToTranslate = isArray ? text : [text];
+  
+  // Selezione modello basata su lingue
+  const getModelName = (source, target) => {
+    const langPair = `${source}-${target}`;
+    const models = {
+      'it-en': 'Helsinki-NLP/opus-mt-it-en',
+      'it-es': 'Helsinki-NLP/opus-mt-it-es', 
+      'it-fr': 'Helsinki-NLP/opus-mt-it-fr'
+    };
+    return models[langPair] || 'Helsinki-NLP/opus-mt-it-en';
+  };
+
+  const modelName = getModelName(sourceLang || 'it', targetLang);
+  
+  const results = [];
+  
+  // Traduci testo per testo per evitare rate limiting
+  for (const singleText of textsToTranslate) {
+    const response = await fetch(
+      `https://api-inference.huggingface.co/models/${modelName}`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${HF_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          inputs: singleText,
+          options: {
+            wait_for_model: true
+          }
+        })
       }
-      
-      return res.status(response.status).json({ 
-        error: `DeepL HTTP ${response.status}: ${response.statusText}` 
-      });
+    );
+
+    if (!response.ok) {
+      if (response.status === 429) {
+        throw new Error('HuggingFace: Rate limit, riprova tra poco');
+      }
+      throw new Error(`HuggingFace HTTP ${response.status}`);
     }
 
     const data = await response.json();
-
-    if (data.translations && data.translations.length > 0) {
-      const translatedTexts = data.translations.map(t => t.text);
-      
-      console.log(`Traduzione completata: ${translatedTexts.length} testi`);
-      
-      return res.status(200).json({
-        translatedText: Array.isArray(text) ? translatedTexts : translatedTexts[0],
-        originalText: text,
-        sourceLang: sourceMapped,
-        targetLang: targetMapped
-      });
+    
+    if (Array.isArray(data) && data[0] && data[0].translation_text) {
+      results.push(data[0].translation_text);
     } else {
-      return res.status(500).json({ 
-        error: 'Nessuna traduzione ricevuta da DeepL' 
-      });
+      results.push(singleText); // Fallback
     }
 
-  } catch (error) {
-    console.error('Errore nel proxy:', error);
-    return res.status(500).json({ 
-      error: `Errore interno del server: ${error.message}` 
-    });
+    // Pausa tra richieste per rispettare rate limits
+    if (textsToTranslate.length > 1) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
   }
+
+  return isArray ? results : results[0];
 }
